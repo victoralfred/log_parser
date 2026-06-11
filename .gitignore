@@ -1,6 +1,7 @@
 # runtime artifacts
 logscope.db
 *.db
+*.db-journal
 uploads/
 
 # python
