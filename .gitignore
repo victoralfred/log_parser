@@ -1,0 +1,17 @@
+# runtime artifacts
+logscope.db
+*.db
+uploads/
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# editors / misc
+.vscode/
+.idea/
+nohup.out

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>logscope — Datadog Agent log analysis</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>logscope</h1>
+  <input id="root-input" type="text" placeholder="log directory to scan" size="40">
+  <span id="scan-levels" class="level-picks" title="store only these levels when scanning">
+    <label><input type="checkbox" value="ALL" checked>ALL</label><label><input type="checkbox" value="DEBUG">DEBUG</label><label><input type="checkbox" value="INFO">INFO</label><label><input type="checkbox" value="WARN">WARN</label><label><input type="checkbox" value="ERROR">ERROR</label><label><input type="checkbox" value="CRITICAL">CRITICAL</label>
+  </span>
+  <button id="scan-btn">Scan now</button>
+  <input id="upload-input" type="file" accept=".tar,.gz,.tgz,.bz2,.xz,application/x-tar,application/gzip" hidden>
+  <button id="upload-btn" title="upload a tar archive of log files and scan it">Upload archive…</button>
+  <span id="scan-status"></span>
+  <span id="active-filters"></span>
+  <button id="clear-filters" hidden>clear filters</button>
+</header>
+
+<div class="layout">
+  <aside id="sidebar">
+    <h2>Scanners</h2>
+    <div id="scanner-list"></div>
+    <h2>Silence gaps</h2>
+    <div id="gaps"></div>
+  </aside>
+
+  <main>
+    <section>
+      <h2>Service × level</h2>
+      <div id="matrix"></div>
+    </section>
+
+    <section>
+      <h2>Timeline <select id="tl-level">
+        <option value="">all levels</option>
+        <option>INFO</option><option>WARN</option>
+        <option>ERROR</option><option>CRITICAL</option>
+      </select></h2>
+      <canvas id="timeline" height="120"></canvas>
+    </section>
+
+    <section>
+      <h2>Top message templates</h2>
+      <div id="fingerprints"></div>
+    </section>
+
+    <section id="plugin-panels"></section>
+
+    <section>
+      <h2>Records <span id="rec-count"></span></h2>
+      <div class="toolbar">
+        <input id="search-input" type="text" placeholder="search messages…" size="44">
+        <label class="check"><input type="checkbox" id="search-regex"> regex</label>
+        <button id="search-btn">Search</button>
+        <span id="search-error" class="error-text"></span>
+        <span id="view-levels" class="level-picks" title="show only these levels">
+          <label><input type="checkbox" value="TRACE">TRACE</label><label><input type="checkbox" value="DEBUG">DEBUG</label><label><input type="checkbox" value="INFO">INFO</label><label><input type="checkbox" value="WARN">WARN</label><label><input type="checkbox" value="ERROR">ERROR</label><label><input type="checkbox" value="CRITICAL">CRITICAL</label>
+        </span>
+      </div>
+      <div id="records"></div>
+      <div class="pager">
+        <button id="prev-page">&laquo; prev</button>
+        <span id="page-info"></span>
+        <button id="next-page">next &raquo;</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
