@@ -42,6 +42,21 @@ class SourceInfo:
     size_hint: int | None = None   # bytes or estimated record count, for progress
 
 
+@dataclass
+class Document:
+    """A non-record artifact a scanner extracts: config files, metadata
+    dumps, diagnostics. Stored in the documents table and browsed in the
+    UI's "Flare files" section."""
+
+    path: str                  # relative path within the target, e.g. "etc/datadog.yaml"
+    category: str              # "config" | "metadata" | "log-other" | "other"
+    format: str                # "yaml" | "json" | "text"
+    content: str               # raw text, size-capped by the producer
+    source: str = ""           # SourceInfo.source_id of the producing scan
+    scrubbed: bool = False     # content contains '****' redaction markers
+    truncated: bool = False    # content was cut at the size cap
+
+
 @dataclass(frozen=True)
 class PanelSpec:
     """An optional UI panel a scanner contributes to the dashboard.
@@ -87,6 +102,14 @@ class Scanner(ABC):
     @abstractmethod
     def scan(self, source: SourceInfo, target: ScanTarget) -> Iterator[LogRecord]:
         """Stream normalized records from one source. Must be a generator."""
+
+    # --- optional documents facet ---
+    def documents(self, target: ScanTarget) -> Iterator[Document]:
+        """Optional: yield non-record artifacts (configs, metadata files,
+        diagnostics) found under `target`. Default: nothing. Same error
+        rules as scan(): per-file problems should be skipped or degraded,
+        only source-level failure raises ScannerError."""
+        return iter(())
 
     # --- optional UI contribution ---
     def panels(self) -> list[PanelSpec]:

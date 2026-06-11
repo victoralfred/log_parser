@@ -123,6 +123,37 @@ def timeline(store, bucket=60, **filters):
         (bucket, bucket, *params))
 
 
+FLATTEN_CAP = 5000
+
+
+def flatten(obj, prefix=""):
+    """Flatten nested dicts/lists into dot-notation (key, value) pairs, so
+    config files become a searchable variables table.
+    {"apm_config": {"enabled": true}} -> [("apm_config.enabled", "true")]"""
+    pairs = []
+
+    def walk(node, path):
+        if len(pairs) >= FLATTEN_CAP:
+            return
+        if isinstance(node, dict):
+            if not node:
+                pairs.append((path, "{}"))
+            for key, value in node.items():
+                walk(value, f"{path}.{key}" if path else str(key))
+        elif isinstance(node, list):
+            if not node:
+                pairs.append((path, "[]"))
+            for i, value in enumerate(node):
+                walk(value, f"{path}[{i}]")
+        else:
+            pairs.append((path, "null" if node is None else
+                          str(node).lower() if isinstance(node, bool) else
+                          str(node)))
+
+    walk(obj, prefix)
+    return pairs[:FLATTEN_CAP]
+
+
 def gaps(store, threshold=300.0):
     """Per service, intervals longer than `threshold` seconds with no records
     — candidate crashes, hangs, or rotation losses."""

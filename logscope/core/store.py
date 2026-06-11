@@ -28,6 +28,13 @@ CREATE TABLE IF NOT EXISTS records (
 CREATE INDEX IF NOT EXISTS ix_records_main ON records(service, level, ts_epoch);
 CREATE INDEX IF NOT EXISTS ix_records_fp ON records(fingerprint);
 CREATE INDEX IF NOT EXISTS ix_records_source ON records(source);
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY,
+    source TEXT, path TEXT, category TEXT, format TEXT,
+    scrubbed INT, truncated INT, size INT, content TEXT,
+    UNIQUE(source, path)
+);
+CREATE INDEX IF NOT EXISTS ix_documents_cat ON documents(category);
 CREATE TABLE IF NOT EXISTS scan_runs (
     id INTEGER PRIMARY KEY,
     started REAL, finished REAL, status TEXT, error TEXT,
@@ -131,6 +138,24 @@ class Store:
             self._conn.commit()
         return len(batch)
 
+    def ingest_documents(self, docs, source_id: str) -> int:
+        """Replace a source's documents with a fresh set; returns count."""
+        rows = [(doc.source or source_id, doc.path, doc.category, doc.format,
+                 int(doc.scrubbed), int(doc.truncated), len(doc.content),
+                 doc.content) for doc in docs]
+        if not rows:
+            # don't wipe another scanner's documents for the same target
+            return 0
+        with self._lock:
+            self._conn.execute("DELETE FROM documents WHERE source = ?",
+                               (source_id,))
+            self._conn.executemany(
+                "INSERT INTO documents (source, path, category, format,"
+                " scrubbed, truncated, size, content)"
+                " VALUES (?,?,?,?,?,?,?,?)", rows)
+            self._conn.commit()
+        return len(rows)
+
     # --- queries ----------------------------------------------------------
 
     def query(self, sql: str, params=()) -> list[dict]:
@@ -227,6 +252,24 @@ def _scan_worker(registry, store, target, names, run_id, levels=None):
                     entry["error"] = str(exc)
                 store.update_run(run_id, sources=sources_status,
                                  record_count=total)
+            # documents facet: once per scanner over the whole target
+            try:
+                n_docs = store.ingest_documents(scanner.documents(target),
+                                                str(target.root))
+                if n_docs:
+                    sources_status.append(
+                        {"scanner": name, "source": str(target.root),
+                         "label": f"{name}: documents", "status": "done",
+                         "records": 0, "skipped": 0, "documents": n_docs,
+                         "error": None})
+                    store.update_run(run_id, sources=sources_status)
+            except Exception as exc:
+                sources_status.append(
+                    {"scanner": name, "source": str(target.root),
+                     "label": f"{name}: documents", "status": "failed",
+                     "records": 0, "skipped": 0, "documents": 0,
+                     "error": str(exc)})
+                store.update_run(run_id, sources=sources_status)
         store.update_run(run_id, status="done", finished=time_mod.time(),
                          sources=sources_status, record_count=total)
     except Exception as exc:

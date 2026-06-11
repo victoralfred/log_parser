@@ -15,3 +15,7 @@ dist/
 .vscode/
 .idea/
 nohup.out
+
+# flare data (real diagnostics — keep out of the repo)
+voseghale-HP/
+datadog-agent-*.zip

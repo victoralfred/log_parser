@@ -6,7 +6,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import yaml
 from fastapi import APIRouter, HTTPException, Request, UploadFile
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from logscope.core import analysis
@@ -159,6 +161,60 @@ def get_panels(request: Request):
             for panel in status.panels:
                 panels.append({**panel, "scanner": status.name})
     return {"panels": panels}
+
+
+@router.get("/documents")
+def list_documents(request: Request, category: str | None = None,
+                   source: str | None = None, q: str | None = None):
+    """List extracted documents (configs, metadata) without their content."""
+    _, store = _ctx(request)
+    where, params = [], []
+    if category:
+        where.append("category = ?"); params.append(category)
+    if source:
+        where.append("source = ?"); params.append(source)
+    if q:
+        where.append("(path LIKE ? OR content LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    rows = store.query(
+        f"SELECT id, source, path, category, format, scrubbed, truncated,"
+        f" size FROM documents{clause} ORDER BY category, path", params)
+    counts = store.query(
+        "SELECT category, COUNT(*) AS n FROM documents GROUP BY category")
+    return {"documents": rows,
+            "counts": {r["category"]: r["n"] for r in counts}}
+
+
+def _get_document(store, doc_id: int) -> dict:
+    row = store.one("SELECT * FROM documents WHERE id = ?", (doc_id,))
+    if row is None:
+        raise HTTPException(404, "no such document")
+    return row
+
+
+@router.get("/documents/{doc_id}")
+def get_document(request: Request, doc_id: int):
+    """Full document. For yaml/json formats, `parsed` holds the content
+    flattened to dot-notation key/value pairs (the variables view)."""
+    _, store = _ctx(request)
+    row = _get_document(store, doc_id)
+    row["parsed"] = None
+    if row["format"] in ("yaml", "json"):
+        try:
+            data = (json.loads(row["content"]) if row["format"] == "json"
+                    else yaml.safe_load(row["content"]))
+            if isinstance(data, (dict, list)):
+                row["parsed"] = analysis.flatten(data)
+        except Exception:
+            pass  # malformed -> raw view only
+    return row
+
+
+@router.get("/documents/{doc_id}/raw")
+def get_document_raw(request: Request, doc_id: int):
+    _, store = _ctx(request)
+    return PlainTextResponse(_get_document(store, doc_id)["content"])
 
 
 @router.post("/upload")

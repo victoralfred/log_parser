@@ -176,8 +176,8 @@ async function loadMatrix() {
 
 /* ---------- timeline canvas ---------- */
 
-const LEVEL_COLORS = {INFO: "#3fb950", WARN: "#d29922", ERROR: "#f85149",
-                      CRITICAL: "#ff7b72", DEBUG: "#8b949e", TRACE: "#8b949e"};
+const LEVEL_COLORS = {INFO: "#1a7f37", WARN: "#bf8700", ERROR: "#cf222e",
+                      CRITICAL: "#a40e26", DEBUG: "#6e7781", TRACE: "#6e7781"};
 let tlBuckets = [];
 
 async function loadTimeline() {
@@ -197,7 +197,7 @@ async function loadTimeline() {
   const W = canvas.clientWidth, H = 120;
   ctx.clearRect(0, 0, W, H);
   if (!data.points.length) {
-    ctx.fillStyle = "#8b949e";
+    ctx.fillStyle = "#84718e";
     ctx.fillText("no data — run a scan", 10, 60);
     tlBuckets = [];
     return;
@@ -225,14 +225,14 @@ async function loadTimeline() {
       const n = stack[lvl];
       if (!n) continue;
       const h = Math.max(1, (n / maxTotal) * (H - 22));
-      ctx.fillStyle = LEVEL_COLORS[lvl] || "#8b949e";
+      ctx.fillStyle = LEVEL_COLORS[lvl] || "#84718e";
       ctx.fillRect(x, y - h, Math.max(barW - 1, 1), h);
       y -= h;
     }
     tlBuckets.push({x, w: barW, ts});
   }
   // axis labels
-  ctx.fillStyle = "#8b949e";
+  ctx.fillStyle = "#84718e";
   ctx.font = "10px sans-serif";
   ctx.fillText(fmtTs(t0), 4, H - 3);
   const endLabel = fmtTs(t1);
@@ -366,6 +366,107 @@ async function loadPanels() {
   }
 }
 
+/* ---------- flare documents browser ---------- */
+
+const DOC_TAB_LABELS = {config: "Configurations", metadata: "Metadata",
+                        "log-other": "Other logs", other: "Other"};
+let docCategory = "config";
+let docSearchTimer = null;
+let activeDocId = null;
+
+async function loadDocuments() {
+  const params = new URLSearchParams({category: docCategory});
+  const q = $("doc-search").value.trim();
+  if (q) params.set("q", q);
+  const data = await api(`/api/documents?${params}`);
+  const counts = data.counts || {};
+  const totalDocs = Object.values(counts).reduce((a, b) => a + b, 0);
+  $("flare-section").hidden = totalDocs === 0;
+  if (totalDocs === 0) return;
+
+  // tabs
+  const tabs = Object.keys(DOC_TAB_LABELS).filter(c => counts[c]);
+  if (!tabs.includes(docCategory)) docCategory = tabs[0];
+  $("doc-tabs").innerHTML = tabs.map(c =>
+    `<label><input type="radio" name="doc-tab" value="${c}"
+       ${c === docCategory ? "checked" : ""}>
+       ${DOC_TAB_LABELS[c]} (${counts[c]})</label>`).join("");
+  document.querySelectorAll('#doc-tabs input').forEach(r =>
+    r.addEventListener("change", () => { docCategory = r.value; loadDocuments(); }));
+
+  // file list grouped by top-level dir
+  const groups = new Map();
+  for (const d of data.documents) {
+    const top = d.path.includes("/") ? d.path.split("/")[0] + "/" : "(root)";
+    if (!groups.has(top)) groups.set(top, []);
+    groups.get(top).push(d);
+  }
+  let html = "";
+  for (const [group, docs] of [...groups.entries()].sort()) {
+    html += `<div class="doc-group">${esc(group)} · ${docs.length}</div>`;
+    for (const d of docs)
+      html += `<div class="doc-item ${d.id === activeDocId ? "active" : ""}" data-id="${d.id}">
+        <span class="path">${esc(d.path)}${d.scrubbed ? " 🔒" : ""}</span>
+        <span class="size">${fmtSize(d.size)}</span></div>`;
+  }
+  $("doc-list").innerHTML = html || '<div class="muted" style="padding:10px">no matches</div>';
+  document.querySelectorAll(".doc-item").forEach(el =>
+    el.addEventListener("click", () => openDocument(+el.dataset.id)));
+}
+
+function fmtSize(n) {
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+  return n + " B";
+}
+
+async function openDocument(id) {
+  activeDocId = id;
+  document.querySelectorAll(".doc-item").forEach(el =>
+    el.classList.toggle("active", +el.dataset.id === id));
+  const d = await api(`/api/documents/${id}`);
+  const badges =
+    `<span class="badge channel">${esc(d.format)}</span>` +
+    (d.scrubbed ? '<span class="badge scrubbed">scrubbed values</span>' : "") +
+    (d.truncated ? '<span class="badge truncated">truncated at 2 MB</span>' : "");
+  const hasVars = Array.isArray(d.parsed) && d.parsed.length;
+  let html = `<div class="doc-meta"><span class="path">${esc(d.path)}</span>${badges}
+    ${hasVars ? `<button id="doc-toggle">show raw</button>` : ""}
+    <a href="/api/documents/${id}/raw" target="_blank"><button>open raw ↗</button></a>
+  </div><div id="doc-body"></div>`;
+  $("doc-viewer").innerHTML = html;
+
+  const renderVars = () => {
+    const filter = ($("doc-search").value || "").toLowerCase();
+    const rows = d.parsed
+      .filter(([k, v]) => !filter || (k + "=" + v).toLowerCase().includes(filter))
+      .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(String(v).slice(0, 300))}</td></tr>`);
+    $("doc-body").innerHTML = `<table class="var-table">
+      <tr><th>variable</th><th>value</th></tr>${rows.join("")}</table>` +
+      (rows.length === 0 ? '<div class="muted">no matching variables</div>' : "");
+  };
+  const renderRaw = () => {
+    $("doc-body").innerHTML = `<pre>${esc(d.content)}</pre>`;
+  };
+
+  if (hasVars) {
+    let showingVars = true;
+    renderVars();
+    $("doc-toggle").onclick = () => {
+      showingVars = !showingVars;
+      $("doc-toggle").textContent = showingVars ? "show raw" : "show variables";
+      showingVars ? renderVars() : renderRaw();
+    };
+  } else {
+    renderRaw();
+  }
+}
+
+$("doc-search").addEventListener("input", () => {
+  clearTimeout(docSearchTimer);
+  docSearchTimer = setTimeout(loadDocuments, 300);
+});
+
 /* ---------- orchestration ---------- */
 
 async function refresh() {
@@ -373,7 +474,7 @@ async function refresh() {
   syncLevelChecks();
   await Promise.allSettled([
     loadMatrix(), loadTimeline(), loadFingerprints(), loadRecords(),
-    loadGaps(), loadPanels(),
+    loadGaps(), loadPanels(), loadDocuments(),
   ]);
 }
 

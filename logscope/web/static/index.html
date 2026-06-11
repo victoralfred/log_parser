@@ -14,7 +14,7 @@
     <label><input type="checkbox" value="ALL" checked>ALL</label><label><input type="checkbox" value="DEBUG">DEBUG</label><label><input type="checkbox" value="INFO">INFO</label><label><input type="checkbox" value="WARN">WARN</label><label><input type="checkbox" value="ERROR">ERROR</label><label><input type="checkbox" value="CRITICAL">CRITICAL</label>
   </span>
   <button id="scan-btn">Scan now</button>
-  <input id="upload-input" type="file" accept=".tar,.gz,.tgz,.bz2,.xz,application/x-tar,application/gzip" hidden>
+  <input id="upload-input" type="file" accept=".tar,.gz,.tgz,.bz2,.xz,.zip,application/x-tar,application/gzip,application/zip" hidden>
   <button id="upload-btn" title="upload a tar archive of log files and scan it">Upload archive…</button>
   <span id="scan-status"></span>
   <span id="active-filters"></span>
@@ -50,6 +50,20 @@
     </section>
 
     <section id="plugin-panels"></section>
+
+    <section id="flare-section" hidden>
+      <h2>Flare files</h2>
+      <div class="toolbar">
+        <span id="doc-tabs" class="level-picks"></span>
+        <input id="doc-search" type="text" placeholder="filter files / content…" size="30">
+      </div>
+      <div class="doc-layout">
+        <div id="doc-list"></div>
+        <div id="doc-viewer">
+          <div class="muted">select a file</div>
+        </div>
+      </div>
+    </section>
 
     <section>
       <h2>Records <span id="rec-count"></span></h2>
