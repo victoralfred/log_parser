@@ -137,6 +137,45 @@ def test_zip_upload_of_flare(flare_dir, tmp_path):
         assert docs["counts"].get("config") == 2
 
 
+def test_wrapper_dir_detection(tmp_path):
+    """Real flares unzip into a hostname wrapper dir — detect one level down."""
+    wrapper = tmp_path / "extracted"
+    make_flare(wrapper / "voseghale-HP")
+    scanner = FlareScanner()
+    sources = scanner.discover(ScanTarget(root=str(wrapper)))
+    assert len(sources) == 1
+    assert sources[0].label == "flare: voseghale-HP"
+    docs = list(scanner.documents(ScanTarget(root=str(wrapper))))
+    assert {d.path for d in docs} >= {"etc/datadog.yaml", "metadata/host.json"}
+    # paths stay relative to the flare root, not the wrapper
+    assert all(not d.path.startswith("voseghale-HP/") for d in docs)
+
+
+def test_wrapped_zip_upload_and_rescan_idempotent(tmp_path):
+    """Zip with a wrapper dir (the real flare layout) ingests documents,
+    and scanning twice doesn't duplicate them."""
+    wrapper = tmp_path / "stage"
+    flare = make_flare(wrapper / "myhost-HP")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for p in flare.rglob("*"):
+            if p.is_file():
+                zf.write(p, arcname=f"myhost-HP/{p.relative_to(flare).as_posix()}")
+    buf.seek(0)
+    app = create_app(db_path=":memory:", uploads_root=tmp_path / "up")
+    with TestClient(app) as c:
+        root = c.post("/api/upload",
+                      files={"file": ("flare.zip", buf)}).json()["root"]
+        for _ in range(2):   # second scan must replace, not duplicate
+            run = c.post("/api/scan", json={
+                "scanners": ["agent-files", "flare"], "root": root}).json()
+            run = wait_for_run(c, run["run_id"])
+            assert run["status"] == "done"
+        counts = c.get("/api/documents").json()["counts"]
+        assert counts["config"] == 2
+        assert run["record_count"] == 5   # wrapped logs/ still found by rglob
+
+
 def test_zip_traversal_rejected(tmp_path):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

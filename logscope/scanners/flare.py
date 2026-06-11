@@ -84,6 +84,22 @@ def _detect_format(rel_path: str, content: str) -> str:
     return "text"
 
 
+def _is_flare_root(path: Path) -> bool:
+    return sum(1 for marker in _FLARE_MARKERS
+               if (path / marker).exists()) >= 2
+
+
+def _find_flare_roots(root: Path) -> list[Path]:
+    """The target itself, or — flares unzip into a hostname wrapper dir
+    (e.g. uploads/xxx/voseghale-HP/...) — its immediate subdirectories."""
+    if _is_flare_root(root):
+        return [root]
+    if not root.is_dir():
+        return []
+    return [child for child in sorted(root.iterdir())
+            if child.is_dir() and _is_flare_root(child)]
+
+
 class FlareScanner(Scanner):
     name = "flare"
     channel = "flare"
@@ -94,20 +110,19 @@ class FlareScanner(Scanner):
         root = Path(target.root).expanduser()
         if not root.is_dir():
             return []
-        hits = sum(1 for marker in _FLARE_MARKERS if (root / marker).exists())
-        if hits < 2:
-            return []
-        return [SourceInfo(scanner=self.name, source_id=str(root),
-                           label=f"flare: {root.name}")]
+        return [SourceInfo(scanner=self.name, source_id=str(flare_root),
+                           label=f"flare: {flare_root.name}")
+                for flare_root in _find_flare_roots(root)]
 
     def scan(self, source: SourceInfo, target: ScanTarget):
         # Log records come from the agent-files scanner; nothing to add here.
         return iter(())
 
     def documents(self, target: ScanTarget):
-        root = Path(target.root).expanduser()
-        if not self.discover(target):
-            return
+        for flare_root in _find_flare_roots(Path(target.root).expanduser()):
+            yield from self._walk(flare_root)
+
+    def _walk(self, root: Path):
         source_id = str(root)
         for path in sorted(root.rglob("*")):
             if not path.is_file():

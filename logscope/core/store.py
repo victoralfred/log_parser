@@ -146,9 +146,14 @@ class Store:
         if not rows:
             # don't wipe another scanner's documents for the same target
             return 0
+        # replace by the sources actually present in this batch — documents
+        # may carry their own source (e.g. a flare root nested under the
+        # target), and re-scans must overwrite those, not the bare target
+        sources = {row[0] for row in rows} | {source_id}
         with self._lock:
-            self._conn.execute("DELETE FROM documents WHERE source = ?",
-                               (source_id,))
+            self._conn.execute(
+                f"DELETE FROM documents WHERE source IN"
+                f" ({','.join('?' * len(sources))})", tuple(sources))
             self._conn.executemany(
                 "INSERT INTO documents (source, path, category, format,"
                 " scrubbed, truncated, size, content)"

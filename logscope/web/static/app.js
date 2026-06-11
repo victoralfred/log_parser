@@ -44,6 +44,44 @@ function filterQuery(extra = {}) {
   return params.toString();
 }
 
+/* ---------- modal ---------- */
+
+let modalRawText = "";   // what the copy button copies
+
+function openModal(title, {console: consoleSkin = false, extraHTML = ""} = {}) {
+  $("modal-title").textContent = title;
+  $("modal-extra").innerHTML = extraHTML;
+  const body = $("modal-body");
+  body.className = consoleSkin ? "modal-console" : "";
+  body.innerHTML = "";
+  $("modal-overlay").hidden = false;
+  document.body.style.overflow = "hidden";
+  return body;
+}
+
+function closeModal() {
+  $("modal-overlay").hidden = true;
+  document.body.style.overflow = "";
+  modalRawText = "";
+}
+
+$("modal-close").onclick = closeModal;
+$("modal-overlay").addEventListener("click", (ev) => {
+  if (ev.target === $("modal-overlay")) closeModal();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !$("modal-overlay").hidden) closeModal();
+});
+$("modal-copy").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(modalRawText);
+    $("modal-copy").textContent = "copied ✓";
+  } catch {
+    $("modal-copy").textContent = "copy failed";
+  }
+  setTimeout(() => { $("modal-copy").textContent = "copy"; }, 1200);
+};
+
 function renderFilterBar() {
   const parts = Object.entries(filters).map(([k, v]) =>
     `${k}=${String(v).slice(0, 30)}`);
@@ -303,25 +341,30 @@ async function loadRecords() {
   $("page-info").textContent =
     `page ${page + 1} / ${Math.max(1, Math.ceil(data.total / PAGE_SIZE))}`;
   for (const row of document.querySelectorAll(".rec-row"))
-    row.onclick = () => toggleDetail(row);
+    row.onclick = () => openRecordModal(+row.dataset.id);
 }
 
-async function toggleDetail(row) {
-  const next = row.nextElementSibling;
-  if (next && next.classList.contains("detail-row")) { next.remove(); return; }
-  const r = await api(`/api/records/${row.dataset.id}`);
-  const tr = document.createElement("tr");
-  tr.className = "detail-row";
-  const lines = [
-    `${r.time} | ${r.logger} | ${r.level} | (${r.file}:${r.line} in ${r.func})`,
-    r.msg,
-    ...(r.continuation || []),
-  ];
-  const extra = Object.keys(r.extra || {}).length
-    ? "\nextra: " + JSON.stringify(r.extra) : "";
-  tr.innerHTML = `<td colspan="5"><div class="rec-detail">${esc(lines.join("\n"))}${esc(extra)}
-source: ${esc(r.source)}:${r.lineno} · channel: ${esc(r.channel)} · fingerprint: ${esc(r.fingerprint)}</div></td>`;
-  row.after(tr);
+async function openRecordModal(id) {
+  const r = await api(`/api/records/${id}`);
+  const headerLine = r.logger
+    ? `${r.time} | ${r.logger} | ${r.level} | (${r.file}:${r.line} in ${r.func})`
+    : r.time;
+  const lines = [headerLine, "", r.msg, ...(r.continuation || [])];
+  const metaPairs = [
+    ["service", r.service], ["component", r.component],
+    ["channel", r.channel], ["source", `${r.source}:${r.lineno}`],
+    ["fingerprint", r.fingerprint],
+    ...Object.entries(r.extra || {}),
+  ].filter(([, v]) => v);
+  modalRawText = lines.join("\n") + "\n\n" +
+    metaPairs.map(([k, v]) => `${k}: ${v}`).join("\n");
+
+  const body = openModal(`${r.level || "log"} record #${r.id}`, {console: true});
+  body.innerHTML = `<pre><span class="console-meta">${esc(r.time)} | ${esc(r.logger)} | </span><span class="console-level-${esc(r.level)}">${esc(r.level)}</span><span class="console-meta"> | (${esc(r.file)}:${r.line} in ${esc(r.func)})</span>
+
+${esc(r.msg)}${(r.continuation || []).length ? "\n" + esc(r.continuation.join("\n")) : ""}
+
+<span class="console-meta">${metaPairs.map(([k, v]) => `${esc(k)}: ${esc(v)}`).join("\n")}</span></pre>`;
 }
 
 /* ---------- gaps ---------- */
@@ -372,7 +415,6 @@ const DOC_TAB_LABELS = {config: "Configurations", metadata: "Metadata",
                         "log-other": "Other logs", other: "Other"};
 let docCategory = "config";
 let docSearchTimer = null;
-let activeDocId = null;
 
 async function loadDocuments() {
   const params = new URLSearchParams({category: docCategory});
@@ -403,11 +445,12 @@ async function loadDocuments() {
   }
   let html = "";
   for (const [group, docs] of [...groups.entries()].sort()) {
-    html += `<div class="doc-group">${esc(group)} · ${docs.length}</div>`;
+    html += `<div class="doc-group">${esc(group)} · ${docs.length}</div><div class="doc-items">`;
     for (const d of docs)
-      html += `<div class="doc-item ${d.id === activeDocId ? "active" : ""}" data-id="${d.id}">
+      html += `<div class="doc-item" data-id="${d.id}">
         <span class="path">${esc(d.path)}${d.scrubbed ? " 🔒" : ""}</span>
         <span class="size">${fmtSize(d.size)}</span></div>`;
+    html += `</div>`;
   }
   $("doc-list").innerHTML = html || '<div class="muted" style="padding:10px">no matches</div>';
   document.querySelectorAll(".doc-item").forEach(el =>
@@ -421,32 +464,28 @@ function fmtSize(n) {
 }
 
 async function openDocument(id) {
-  activeDocId = id;
-  document.querySelectorAll(".doc-item").forEach(el =>
-    el.classList.toggle("active", +el.dataset.id === id));
   const d = await api(`/api/documents/${id}`);
-  const badges =
-    `<span class="badge channel">${esc(d.format)}</span>` +
-    (d.scrubbed ? '<span class="badge scrubbed">scrubbed values</span>' : "") +
-    (d.truncated ? '<span class="badge truncated">truncated at 2 MB</span>' : "");
+  modalRawText = d.content;
   const hasVars = Array.isArray(d.parsed) && d.parsed.length;
-  let html = `<div class="doc-meta"><span class="path">${esc(d.path)}</span>${badges}
-    ${hasVars ? `<button id="doc-toggle">show raw</button>` : ""}
-    <a href="/api/documents/${id}/raw" target="_blank"><button>open raw ↗</button></a>
-  </div><div id="doc-body"></div>`;
-  $("doc-viewer").innerHTML = html;
+  const extraHTML =
+    `<span class="badge channel">${esc(d.format)}</span>` +
+    (d.scrubbed ? '<span class="badge scrubbed">scrubbed</span>' : "") +
+    (d.truncated ? '<span class="badge truncated">truncated</span>' : "") +
+    (hasVars ? `<button id="doc-toggle">show raw</button>` : "") +
+    `<a href="/api/documents/${id}/raw" target="_blank"><button>raw ↗</button></a>`;
+  const body = openModal(d.path, {extraHTML});
 
   const renderVars = () => {
     const filter = ($("doc-search").value || "").toLowerCase();
     const rows = d.parsed
       .filter(([k, v]) => !filter || (k + "=" + v).toLowerCase().includes(filter))
       .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(String(v).slice(0, 300))}</td></tr>`);
-    $("doc-body").innerHTML = `<table class="var-table">
+    body.innerHTML = `<table class="var-table">
       <tr><th>variable</th><th>value</th></tr>${rows.join("")}</table>` +
       (rows.length === 0 ? '<div class="muted">no matching variables</div>' : "");
   };
   const renderRaw = () => {
-    $("doc-body").innerHTML = `<pre>${esc(d.content)}</pre>`;
+    body.innerHTML = `<pre>${esc(d.content)}</pre>`;
   };
 
   if (hasVars) {

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>logscope — Datadog Agent log analysis</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 <header>
@@ -57,12 +57,7 @@
         <span id="doc-tabs" class="level-picks"></span>
         <input id="doc-search" type="text" placeholder="filter files / content…" size="30">
       </div>
-      <div class="doc-layout">
-        <div id="doc-list"></div>
-        <div id="doc-viewer">
-          <div class="muted">select a file</div>
-        </div>
-      </div>
+      <div id="doc-list"></div>
     </section>
 
     <section>
@@ -86,6 +81,20 @@
   </main>
 </div>
 
-<script src="app.js"></script>
+<div id="modal-overlay" hidden>
+  <div id="modal" role="dialog" aria-modal="true">
+    <div id="modal-header">
+      <span id="modal-title"></span>
+      <span class="modal-actions">
+        <span id="modal-extra"></span>
+        <button id="modal-copy">copy</button>
+        <button id="modal-close" title="close (Esc)">✕</button>
+      </span>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="app.js?v=4"></script>
 </body>
 </html>
