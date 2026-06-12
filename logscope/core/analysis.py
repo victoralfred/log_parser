@@ -16,9 +16,21 @@ def compile_or_raise(pattern: str):
     return re.compile(pattern, re.IGNORECASE)
 
 
+_FTS_SAFE = re.compile(r"[\w.-]+")
+
+
+def _fts_query(q: str) -> str | None:
+    """Build an FTS5 prefix-token query from a plain search string, or None
+    when the string needs LIKE semantics (special characters etc.)."""
+    tokens = q.split()
+    if not tokens or any(_FTS_SAFE.fullmatch(t) is None for t in tokens):
+        return None
+    return " ".join(f'"{t}"*' for t in tokens)
+
+
 def _filters(service=None, level=None, component=None, fp=None, channel=None,
              source=None, q=None, regex=None, since=None, until=None,
-             parsed=None):
+             parsed=None, fts=False):
     where, params = [], []
     if service:
         where.append("service = ?"); params.append(service)
@@ -39,7 +51,13 @@ def _filters(service=None, level=None, component=None, fp=None, channel=None,
     if source:
         where.append("source = ?"); params.append(source)
     if q:
-        where.append("msg LIKE ?"); params.append(f"%{q}%")
+        match = _fts_query(q) if fts else None
+        if match:
+            where.append("id IN (SELECT rowid FROM records_fts"
+                         " WHERE records_fts MATCH ?)")
+            params.append(match)
+        else:
+            where.append("msg LIKE ?"); params.append(f"%{q}%")
     if regex:
         compile_or_raise(regex)  # reject bad patterns before they hit SQL
         where.append("msg REGEXP ?"); params.append(regex)
@@ -54,7 +72,8 @@ def _filters(service=None, level=None, component=None, fp=None, channel=None,
 
 
 def records(store, limit=200, offset=0, order="desc", **filters):
-    clause, params = _filters(**filters)
+    clause, params = _filters(fts=getattr(store, "fts_enabled", False),
+                              **filters)
     direction = "DESC" if order != "asc" else "ASC"
     return store.query(
         f"SELECT * FROM records{clause}"
@@ -63,7 +82,8 @@ def records(store, limit=200, offset=0, order="desc", **filters):
 
 
 def record_count(store, **filters):
-    clause, params = _filters(**filters)
+    clause, params = _filters(fts=getattr(store, "fts_enabled", False),
+                              **filters)
     return store.one(f"SELECT COUNT(*) AS n FROM records{clause}", params)["n"]
 
 

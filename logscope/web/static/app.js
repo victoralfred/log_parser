@@ -89,6 +89,39 @@ function renderFilterBar() {
   $("clear-filters").hidden = parts.length === 0;
 }
 
+/* ---------- filter state <-> URL hash ---------- */
+
+let applyingHash = false;
+
+function writeHash() {
+  if (applyingHash) return;
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) params.set(k, v);
+  if (page) params.set("page", page);
+  const hash = params.toString();
+  if (hash !== location.hash.slice(1))
+    history.replaceState(null, "", hash ? "#" + hash : location.pathname);
+}
+
+function readHash() {
+  for (const k of Object.keys(filters)) delete filters[k];
+  page = 0;
+  for (const [k, v] of new URLSearchParams(location.hash.slice(1))) {
+    if (k === "page") page = Math.max(0, parseInt(v, 10) || 0);
+    else if (k === "since" || k === "until") filters[k] = parseFloat(v);
+    else filters[k] = v;
+  }
+  // sync widgets from restored state
+  if (filters.q) { $("search-input").value = filters.q; $("search-regex").checked = false; }
+  if (filters.regex) { $("search-input").value = filters.regex; $("search-regex").checked = true; }
+}
+
+window.addEventListener("hashchange", () => {
+  applyingHash = true;
+  readHash();
+  refresh().finally(() => { applyingHash = false; });
+});
+
 /* ---------- scanners sidebar ---------- */
 
 async function loadScanners() {
@@ -216,16 +249,37 @@ async function loadMatrix() {
 
 const LEVEL_COLORS = {INFO: "#1a7f37", WARN: "#bf8700", ERROR: "#cf222e",
                       CRITICAL: "#a40e26", DEBUG: "#6e7781", TRACE: "#6e7781"};
+const BUCKET_STEPS = [60, 300, 900, 3600, 14400, 86400];
 let tlBuckets = [];
+let tlBucket = 900;
+
+function pickBucket(firstTs, lastTs) {
+  const span = Math.max(60, (lastTs || 0) - (firstTs || 0));
+  for (const step of BUCKET_STEPS)
+    if (span / step <= 180) return step;
+  return BUCKET_STEPS[BUCKET_STEPS.length - 1];
+}
 
 async function loadTimeline() {
+  // auto-size buckets to the visible span (zoomed window or full data span)
+  let first = filters.since, last = filters.until;
+  if (first === undefined || last === undefined) {
+    const s = await api("/api/summary");
+    first = filters.since ?? s.first_ts;
+    last = filters.until ?? s.last_ts;
+  }
+  tlBucket = pickBucket(first, last);
+  $("tl-reset").hidden = filters.since === undefined && filters.until === undefined;
+
   const level = $("tl-level").value;
   const params = new URLSearchParams();
   if (level) params.set("level", level);
   if (filters.service) params.set("service", filters.service);
   if (filters.fingerprint) params.set("fingerprint", filters.fingerprint);
   if (filters.regex) params.set("regex", filters.regex);
-  const data = await api(`/api/timeline?bucket=900&${params}`);
+  if (filters.since !== undefined) params.set("since", filters.since);
+  if (filters.until !== undefined) params.set("until", filters.until);
+  const data = await api(`/api/timeline?bucket=${tlBucket}&${params}`);
 
   const canvas = $("timeline");
   const ctx = canvas.getContext("2d");
@@ -248,8 +302,8 @@ async function loadTimeline() {
     byBucket.get(p.bucket_ts)[p.level] = p.n;
   }
   const tsList = [...byBucket.keys()].sort((a, b) => a - b);
-  const t0 = tsList[0], t1 = tsList[tsList.length - 1] + 900;
-  const nSlots = Math.max(1, Math.round((t1 - t0) / 900));
+  const t0 = tsList[0], t1 = tsList[tsList.length - 1] + tlBucket;
+  const nSlots = Math.max(1, Math.round((t1 - t0) / tlBucket));
   const barW = Math.max(1, W / nSlots);
   const maxTotal = Math.max(...tsList.map(ts =>
     Object.values(byBucket.get(ts)).reduce((a, b) => a + b, 0)));
@@ -283,7 +337,7 @@ $("timeline").addEventListener("click", (ev) => {
   const hit = tlBuckets.find(b => x >= b.x && x <= b.x + b.w);
   if (hit) {
     filters.since = hit.ts;
-    filters.until = hit.ts + 900;
+    filters.until = hit.ts + tlBucket;
     page = 0;
     refresh();
   }
@@ -506,14 +560,93 @@ $("doc-search").addEventListener("input", () => {
   docSearchTimer = setTimeout(loadDocuments, 300);
 });
 
+/* ---------- flare health report ---------- */
+
+async function loadReport() {
+  const data = await api("/api/flare/sources");
+  const sources = data.sources || [];
+  $("report-section").hidden = sources.length === 0;
+  if (!sources.length) return;
+
+  const sel = $("report-source");
+  sel.hidden = sources.length < 2;
+  if (sel.options.length !== sources.length) {
+    sel.innerHTML = sources.map(s =>
+      `<option value="${esc(s.source)}">${esc(s.source.split("/").pop())}</option>`).join("");
+    sel.onchange = renderReport;
+  }
+  await renderReport();
+}
+
+async function renderReport() {
+  const source = $("report-source").value;
+  const r = await api(`/api/flare/report?source=${encodeURIComponent(source)}`);
+  const verdictClass = r.verdict === "healthy" ? "healthy"
+    : r.verdict === "needs attention" ? "warn" : "bad";
+  const cards = [];
+
+  if (r.diagnose) {
+    const d = r.diagnose;
+    cards.push(`<div class="report-card"><h3>Diagnose · ${d.success}/${d.total} pass</h3>
+      ${d.entries.length ? `<ul>${d.entries.map(e =>
+        `<li><span class="lvl lvl-${e.status === "WARNING" ? "WARN" : "ERROR"}">${esc(e.status)}</span>
+         ${esc(e.name)}<div class="diag">${esc(e.diagnosis)}</div></li>`).join("")}</ul>`
+        : '<div class="muted">all checks passed</div>'}</div>`);
+  }
+  if (r.health) {
+    cards.push(`<div class="report-card"><h3>Components</h3>
+      ${r.health.unhealthy.length
+        ? `<ul>${r.health.unhealthy.map(u =>
+            `<li><span class="lvl lvl-ERROR">UNHEALTHY</span> ${esc(u)}</li>`).join("")}</ul>`
+        : `<div class="muted">all ${r.health.healthy_count} components healthy</div>`}</div>`);
+  }
+  if (r.config_errors.length) {
+    cards.push(`<div class="report-card"><h3>Configuration errors</h3>
+      <ul>${r.config_errors.map(e =>
+        `<li><b>${esc(e.name)}</b><div class="diag">${esc(e.error)}</div></li>`).join("")}</ul></div>`);
+  }
+  if (r.top_errors.length) {
+    cards.push(`<div class="report-card"><h3>Top error templates</h3>
+      <ul>${r.top_errors.map(f =>
+        `<li class="report-err" data-fp="${esc(f.fingerprint)}">
+          <b>${f.count.toLocaleString()}×</b> [${esc(f.services)}]
+          <span class="tmpl">${esc(f.template.slice(0, 110))}</span></li>`).join("")}</ul></div>`);
+  }
+  if (Object.keys(r.lifecycle).length) {
+    cards.push(`<div class="report-card"><h3>Lifecycle (journald)</h3>
+      <div class="stat-row">${Object.entries(r.lifecycle).map(([k, v]) =>
+        `<div><div class="v">${v}</div><div class="l">${esc(k)}s</div></div>`).join("")}</div></div>`);
+  }
+  if (r.agent && (r.agent.version || (r.agent.version_history || []).length)) {
+    const hist = (r.agent.version_history || []).map(h =>
+      `<li>${esc(h.version)} <span class="diag">${esc((h.timestamp || "").slice(0, 10))} via ${esc(h.tool || "?")}</span></li>`).join("");
+    cards.push(`<div class="report-card"><h3>Agent</h3>
+      <div>v${esc(r.agent.version || "?")} · ${esc(r.agent.os || "")}
+        ${r.agent.install_method ? `· installed via ${esc(r.agent.install_method)}` : ""}</div>
+      ${hist ? `<ul>${hist}</ul>` : ""}</div>`);
+  }
+  const levelBits = Object.entries(r.log_levels || {})
+    .map(([l, n]) => `<span class="lvl lvl-${esc(l)}">${esc(l)}</span> ${n.toLocaleString()}`)
+    .join(" · ");
+
+  $("report-body").innerHTML =
+    `<div class="verdict ${verdictClass}">${esc(r.verdict.toUpperCase())}
+       — ${r.problems} problem${r.problems === 1 ? "" : "s"}, ${r.warnings} warning${r.warnings === 1 ? "" : "s"}
+       ${levelBits ? `<span class="diag" style="float:right">${levelBits}</span>` : ""}</div>
+     <div class="report-grid">${cards.join("")}</div>`;
+  document.querySelectorAll(".report-err").forEach(el =>
+    el.addEventListener("click", () => setFilter("fingerprint", el.dataset.fp)));
+}
+
 /* ---------- orchestration ---------- */
 
 async function refresh() {
   renderFilterBar();
   syncLevelChecks();
+  writeHash();
   await Promise.allSettled([
     loadMatrix(), loadTimeline(), loadFingerprints(), loadRecords(),
-    loadGaps(), loadPanels(), loadDocuments(),
+    loadGaps(), loadPanels(), loadDocuments(), loadReport(),
   ]);
 }
 
@@ -564,10 +697,11 @@ $("upload-input").addEventListener("change", async () => {
       $("scan-status").textContent = `upload failed: ${detail}`;
       return;
     }
-    const {root, files} = await res.json();
+    const {root, files, deduplicated} = await res.json();
     $("root-input").value = root;
     localStorage.setItem("logscope-root", root);
-    $("scan-status").textContent = `extracted ${files} files — scanning…`;
+    $("scan-status").textContent =
+      `${deduplicated ? "already uploaded — reusing" : "extracted"} ${files} files — scanning…`;
     startScan();
   } catch (e) {
     $("scan-status").textContent = `upload failed: ${e.message}`;
@@ -581,6 +715,14 @@ $("clear-filters").onclick = clearFilters;
 $("tl-level").onchange = loadTimeline;
 $("prev-page").onclick = () => { if (page > 0) { page--; loadRecords(); } };
 $("next-page").onclick = () => { page++; loadRecords(); };
+$("tl-reset").onclick = () => {
+  delete filters.since;
+  delete filters.until;
+  page = 0;
+  refresh();
+};
+
 $("root-input").value = localStorage.getItem("logscope-root") || "datadog";
 
+readHash();   // restore filters/page from the URL before first render
 loadScanners().then(refresh);

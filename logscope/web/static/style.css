@@ -218,6 +218,9 @@ canvas { width: 100%; background: var(--tint); border: 1px solid var(--border); 
   background: var(--tint);
   border-radius: 10px 10px 0 0;
 }
+#modal-overlay[hidden]{  
+  display: none !important;
+}
 #modal-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .modal-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 #modal-body { overflow: auto; padding: 12px 16px; }
@@ -248,3 +251,38 @@ canvas { width: 100%; background: var(--tint); border: 1px solid var(--border); 
   color: var(--accent);
 }
 .var-table td:last-child { font-family: ui-monospace, monospace; font-size: 12px; }
+
+/* ---- flare health report ---- */
+.verdict {
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  border: 1px solid;
+}
+.verdict.healthy { background: #dcf3e3; color: var(--info); border-color: #b4e3c3; }
+.verdict.warn { background: #fff3cd; color: #9a6700; border-color: #ecdca0; }
+.verdict.bad { background: #fbdfe2; color: var(--error); border-color: #f3bcc2; }
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  gap: 12px;
+}
+.report-card {
+  background: var(--tint);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.report-card h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--muted);
+}
+.report-card ul { margin: 0; padding-left: 18px; font-size: 13px; }
+.report-card li { margin-bottom: 4px; }
+.report-card .diag { color: var(--muted); font-size: 12px; }
+.report-err { cursor: pointer; }
+.report-err:hover { text-decoration: underline; }

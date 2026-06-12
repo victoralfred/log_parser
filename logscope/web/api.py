@@ -11,9 +11,11 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from logscope.core import analysis
+import hashlib
+
+from logscope.core import analysis, flare_report
 from logscope.core.contract import ScannerError, ScanTarget
-from logscope.core.store import execute_scan
+from logscope.core.store import ScanBusyError, execute_scan
 from logscope.web.uploads import MAX_ARCHIVE_BYTES, UploadError, extract_archive
 
 router = APIRouter(prefix="/api")
@@ -67,7 +69,10 @@ def start_scan(request: Request, body: ScanRequest):
         if bad:
             raise HTTPException(400, f"unknown levels: {', '.join(bad)}")
     levels = [l.upper() for l in body.levels] if body.levels else None
-    run_id = execute_scan(registry, store, target, names, levels=levels)
+    try:
+        run_id = execute_scan(registry, store, target, names, levels=levels)
+    except ScanBusyError as exc:
+        raise HTTPException(409, str(exc))
     return {"run_id": run_id}
 
 
@@ -136,11 +141,13 @@ def get_fingerprints(request: Request, limit: int = 50,
 @router.get("/timeline")
 def get_timeline(request: Request, bucket: int = 60,
                  service: str | None = None, level: str | None = None,
-                 fingerprint: str | None = None, regex: str | None = None):
+                 fingerprint: str | None = None, regex: str | None = None,
+                 since: float | None = None, until: float | None = None):
     _, store = _ctx(request)
     try:
         points = analysis.timeline(store, bucket=bucket, service=service,
-                                   level=level, fp=fingerprint, regex=regex)
+                                   level=level, fp=fingerprint, regex=regex,
+                                   since=since, until=until)
     except re.error as exc:
         raise HTTPException(400, f"invalid regex: {exc}")
     return {"bucket": bucket, "points": points}
@@ -161,6 +168,24 @@ def get_panels(request: Request):
             for panel in status.panels:
                 panels.append({**panel, "scanner": status.name})
     return {"panels": panels}
+
+
+@router.get("/flare/sources")
+def flare_sources(request: Request):
+    """Distinct ingested flare roots (one per uploaded/scanned flare)."""
+    _, store = _ctx(request)
+    rows = store.query(
+        "SELECT source, COUNT(*) AS documents FROM documents GROUP BY source")
+    return {"sources": rows}
+
+
+@router.get("/flare/report")
+def get_flare_report(request: Request, source: str):
+    _, store = _ctx(request)
+    report = flare_report.build_report(store, source)
+    if report is None:
+        raise HTTPException(404, "no documents for that source")
+    return report
 
 
 @router.get("/documents")
@@ -219,10 +244,13 @@ def get_document_raw(request: Request, doc_id: int):
 
 @router.post("/upload")
 async def upload_archive(request: Request, file: UploadFile):
-    """Accept a tar(.gz/.bz2/.xz) of log files, extract it server-side, and
-    return the directory path to use as the scan root."""
+    """Accept a tar(.gz/.bz2/.xz) or zip of log files, extract it
+    server-side, and return the directory path to use as the scan root.
+    Re-uploads of identical content reuse the existing extraction."""
     uploads_root = request.app.state.uploads_root
+    store = request.app.state.store
     name = file.filename or "upload.tar"
+    hasher = hashlib.sha256()
     with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
         tmp_path = Path(tmp.name)
         written = 0
@@ -233,15 +261,25 @@ async def upload_archive(request: Request, file: UploadFile):
                 tmp_path.unlink(missing_ok=True)
                 raise HTTPException(
                     413, f"archive exceeds {MAX_ARCHIVE_BYTES // 2**20} MiB limit")
+            hasher.update(chunk)
             tmp.write(chunk)
+    digest = hasher.hexdigest()
     try:
+        prior = store.one("SELECT * FROM uploads WHERE hash = ?", (digest,))
+        if prior and Path(prior["root"]).is_dir():
+            return {"root": prior["root"], "files": prior["files"],
+                    "bytes": prior["bytes"], "deduplicated": True}
         result = extract_archive(tmp_path, uploads_root,
                                  label=Path(name).stem.removesuffix(".tar"))
+        store.execute(
+            "INSERT OR REPLACE INTO uploads (hash, root, filename, created,"
+            " files, bytes) VALUES (?,?,?,strftime('%s','now'),?,?)",
+            (digest, result["root"], name, result["files"], result["bytes"]))
+        return result
     except UploadError as exc:
         raise HTTPException(400, str(exc))
     finally:
         tmp_path.unlink(missing_ok=True)
-    return result
 
 
 @router.get("/scanners/{name}/panels/{panel_id}")

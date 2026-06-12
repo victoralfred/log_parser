@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>logscope — Datadog Agent log analysis</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
 <header>
@@ -40,7 +40,7 @@
         <option value="">all levels</option>
         <option>INFO</option><option>WARN</option>
         <option>ERROR</option><option>CRITICAL</option>
-      </select></h2>
+      </select> <button id="tl-reset" hidden>reset zoom</button></h2>
       <canvas id="timeline" height="120"></canvas>
     </section>
 
@@ -50,6 +50,11 @@
     </section>
 
     <section id="plugin-panels"></section>
+
+    <section id="report-section" hidden>
+      <h2>Flare health report <select id="report-source" hidden></select></h2>
+      <div id="report-body"></div>
+    </section>
 
     <section id="flare-section" hidden>
       <h2>Flare files</h2>
@@ -95,6 +100,6 @@
   </div>
 </div>
 
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

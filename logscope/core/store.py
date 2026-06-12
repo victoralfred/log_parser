@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     scanners TEXT, root TEXT, record_count INT DEFAULT 0,
     sources TEXT DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS uploads (
+    hash TEXT PRIMARY KEY, root TEXT, filename TEXT, created REAL,
+    files INT, bytes INT
+);
 """
 
 _TZ_SUFFIX = re.compile(r"\s+[A-Z]{2,5}$")  # "CEST", "UTC" — abbreviations are ambiguous; strip
@@ -86,6 +90,51 @@ class Store:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._conn.commit()
+        self.fts_enabled = self._init_fts()
+        self._housekeep()
+
+    def _init_fts(self) -> bool:
+        """Full-text index on msg (external content + sync triggers), so the
+        q= filter is instant at scale. Falls back to LIKE when the SQLite
+        build lacks FTS5."""
+        try:
+            with self._lock:
+                self._conn.executescript("""
+CREATE VIRTUAL TABLE IF NOT EXISTS records_fts
+    USING fts5(msg, content='records', content_rowid='id');
+CREATE TRIGGER IF NOT EXISTS records_ai AFTER INSERT ON records BEGIN
+    INSERT INTO records_fts(rowid, msg) VALUES (new.id, new.msg);
+END;
+CREATE TRIGGER IF NOT EXISTS records_ad AFTER DELETE ON records BEGIN
+    INSERT INTO records_fts(records_fts, rowid, msg)
+        VALUES ('delete', old.id, old.msg);
+END;
+""")
+                # one-time backfill for dbs created before FTS existed
+                n_fts = self._conn.execute(
+                    "SELECT COUNT(*) FROM records_fts").fetchone()[0]
+                n_rec = self._conn.execute(
+                    "SELECT COUNT(*) FROM records").fetchone()[0]
+                if n_fts == 0 and n_rec > 0:
+                    self._conn.execute(
+                        "INSERT INTO records_fts(rowid, msg)"
+                        " SELECT id, msg FROM records")
+                self._conn.commit()
+            return True
+        except sqlite3.OperationalError:
+            return False
+
+    def _housekeep(self):
+        """Startup hygiene: cap scan-run history, fail runs interrupted by
+        a previous shutdown."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE scan_runs SET status='failed',"
+                " error='interrupted by restart' WHERE status='running'")
+            self._conn.execute(
+                "DELETE FROM scan_runs WHERE id NOT IN"
+                " (SELECT id FROM scan_runs ORDER BY id DESC LIMIT 50)")
             self._conn.commit()
 
     # --- ingest -----------------------------------------------------------
@@ -171,6 +220,12 @@ class Store:
         rows = self.query(sql, params)
         return rows[0] if rows else None
 
+    def execute(self, sql: str, params=()):
+        """Run a single committing write statement."""
+        with self._lock:
+            self._conn.execute(sql, params)
+            self._conn.commit()
+
     # --- scan runs --------------------------------------------------------
 
     def create_run(self, scanners: list[str], root: str) -> int:
@@ -201,15 +256,29 @@ class Store:
         return row
 
 
+class ScanBusyError(Exception):
+    """Another scan is currently running; concurrent scans are serialized."""
+
+
+_active_scan_lock = threading.Lock()
+_active_run_id: int | None = None
+
+
 def execute_scan(registry, store: Store, target: ScanTarget,
                  scanner_names: list[str] | None = None,
                  levels: list[str] | None = None) -> int:
     """Run discover+scan for the selected scanners in a background thread.
     Returns the run id immediately; progress is tracked in scan_runs.
-    `levels` restricts which record levels get stored (None = all)."""
+    `levels` restricts which record levels get stored (None = all).
+    Raises ScanBusyError if a scan is already in flight."""
+    global _active_run_id
     names = scanner_names or [s.name for s in registry.scanners()]
-    run_id = store.create_run(names, target.root)
     level_set = set(levels) if levels else None
+    with _active_scan_lock:
+        if _active_run_id is not None:
+            raise ScanBusyError(f"scan {_active_run_id} is already running")
+        run_id = store.create_run(names, target.root)
+        _active_run_id = run_id
     thread = threading.Thread(
         target=_scan_worker,
         args=(registry, store, target, names, run_id, level_set),
@@ -219,6 +288,15 @@ def execute_scan(registry, store: Store, target: ScanTarget,
 
 
 def _scan_worker(registry, store, target, names, run_id, levels=None):
+    try:
+        _scan_worker_inner(registry, store, target, names, run_id, levels)
+    finally:
+        global _active_run_id
+        with _active_scan_lock:
+            _active_run_id = None
+
+
+def _scan_worker_inner(registry, store, target, names, run_id, levels=None):
     sources_status = []
     total = 0
     try:
